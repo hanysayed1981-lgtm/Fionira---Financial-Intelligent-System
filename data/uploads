@@ -1,0 +1,16 @@
+[
+  {
+    "id": "file_exp",
+    "fileName": "expenses.xlsx",
+    "fileHash": "file_exp",
+    "moduleType": "expenses",
+    "createdAt": "2026-05-03T07:32:49.631Z"
+  },
+  {
+    "id": "file_rev",
+    "fileName": "revenues.xlsx",
+    "fileHash": "file_rev",
+    "moduleType": "revenues",
+    "createdAt": "2026-05-03T07:32:49.631Z"
+  }
+]
