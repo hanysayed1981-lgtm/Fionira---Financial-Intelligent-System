@@ -1,0 +1,68 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "A user of the application",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID" },
+        "email": { "type": "string", "format": "email" },
+        "role": { "type": "string", "enum": ["admin", "viewer"], "description": "User role" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "role", "createdAt"]
+    },
+    "UploadedFile": {
+      "title": "UploadedFile",
+      "description": "Metadata for an uploaded Excel file",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "fileName": { "type": "string" },
+        "uploadDate": { "type": "string", "format": "date-time" },
+        "uploadedBy": { "type": "string", "description": "UID of the user who uploaded" },
+        "fileType": { "type": "string", "enum": ["payroll", "expenses", "revenues"] },
+        "recordCount": { "type": "number" },
+        "skippedRowCount": { "type": "number" },
+        "status": { "type": "string", "enum": ["processed", "error"] },
+        "periodYear": { "type": "string" }
+      },
+      "required": ["id", "fileName", "uploadDate", "uploadedBy", "fileType", "recordCount", "status"]
+    },
+    "AppSettings": {
+      "title": "AppSettings",
+      "description": "Global application settings",
+      "type": "object",
+      "properties": {
+        "companyName": { "type": "string" },
+        "activity": { "type": "string" },
+        "taxId": { "type": "string" },
+        "address": { "type": "string" },
+        "website": { "type": "string" },
+        "email": { "type": "string" },
+        "phone": { "type": "string" },
+        "preparerName": { "type": "string" },
+        "currency": { "type": "string" },
+        "timezone": { "type": "string" },
+        "dateFormat": { "type": "string" },
+        "enableEmailAlerts": { "type": "boolean" },
+        "enableSystemAlerts": { "type": "boolean" },
+        "sessionTimeout": { "type": "number" }
+      }
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "Stores user profiles and roles"
+    },
+    "/uploadedFiles/{fileId}": {
+      "schema": { "$ref": "#/entities/UploadedFile" },
+      "description": "Stores metadata for uploaded files"
+    },
+    "/appSettings/{settingId}": {
+      "schema": { "$ref": "#/entities/AppSettings" },
+      "description": "Stores global application settings"
+    }
+  }
+}

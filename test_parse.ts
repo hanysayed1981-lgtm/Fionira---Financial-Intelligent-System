@@ -1,0 +1,10 @@
+import { parseNumber, parseDate } from './src/lib/financial-utils';
+console.log("18,750.00", parseNumber("18,750.00"));
+console.log("10,000", parseNumber("10,000"));
+console.log("2,399.00", parseNumber("2,399.00"));
+console.log("3,063.48", parseNumber("3,063.48"));
+console.log("21,562.50", parseNumber("21,562.50"));
+console.log("Hyphen", parseNumber("-"));
+console.log("Empty", parseNumber(""));
+console.log("Null", parseNumber(null));
+console.log("Whitespace", parseNumber("   "));

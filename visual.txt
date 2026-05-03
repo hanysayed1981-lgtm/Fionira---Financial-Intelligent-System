@@ -1,0 +1,1023 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import React, { useMemo, useState } from 'react';
+import { 
+  ResponsiveContainer, 
+  AreaChart, 
+  Area, 
+  XAxis, 
+  YAxis, 
+  CartesianGrid, 
+  Tooltip, 
+  PieChart, 
+  Pie, 
+  Cell, 
+  Legend, 
+  BarChart, 
+  Bar, 
+  Line, 
+  ComposedChart,
+  TooltipProps
+} from 'recharts';
+import { 
+  Activity, 
+  TrendingDown, 
+  LineChart as LineChartIcon, 
+  ArrowUpRight, 
+  ArrowDownRight, 
+  DollarSign, 
+  AlertCircle,
+  AlertTriangle,
+  Zap,
+  Target,
+  Shield,
+  X,
+  PieChart as PieChartIcon,
+  Calendar,
+  TrendingUp,
+  Users,
+  CheckCircle,
+  Search
+} from 'lucide-react';
+import { motion } from 'motion/react';
+import { formatCurrency, formatMonthName } from '../lib/financial-utils';
+import { TraceModal } from './TraceModal';
+import { useAuth } from '../contexts/AuthProvider';
+import { auth } from '../firebase';
+
+interface VisualDashboardProps {
+  chartDataRaw: any[];
+  revPieData: any[];
+  expPieData: any[];
+  expBarData: any[];
+  topEntitiesData: any[];
+  topSuppliers?: any[];
+  topCustomers?: any[];
+  topEmployees?: any[];
+  incomeStatement: any;
+  onMonthClick?: (month: string) => void;
+  onResetFilter?: () => void;
+  dateFilter?: any;
+  onNavigateToTab?: (tab: string, anchor?: string, search?: string, targetMode?: string) => void;
+  anomaliesCount: number;
+  anomaliesSummary: any[];
+  appMode: 'expenses' | 'revenues' | 'payroll' | 'reports' | 'banks' | string;
+  tenantId?: string;
+}
+
+const CustomTooltip = ({ active, payload, label }: any) => {
+  if (active && payload && payload.length) {
+    return (
+      <div className="bg-slate-900/95 backdrop-blur-md border border-slate-700 p-4 rounded-xl shadow-2xl text-white min-w-[200px]">
+        <p className="text-slate-400 text-xs font-bold mb-2 uppercase tracking-wider">{label}</p>
+        <div className="space-y-2">
+          {(Array.isArray(payload) ? payload : []).map((entry: any, index: number) => (
+            <div key={index} className="flex items-center justify-between gap-4">
+              <div className="flex items-center gap-2">
+                <div className="w-2 h-2 rounded-full" style={{ backgroundColor: entry.color }} />
+                <span className="text-sm font-medium">{entry.name}:</span>
+              </div>
+              <span className="text-sm font-bold font-mono">
+                {typeof entry.value === 'number' ? 
+                  (entry.name?.includes('هامش') ? `${entry.value}%` : formatCurrency(entry.value)) 
+                  : entry.value}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+  return null;
+};
+
+export const VisualDashboard: React.FC<VisualDashboardProps> = ({
+  chartDataRaw,
+  revPieData,
+  expPieData,
+  expBarData,
+  topEntitiesData,
+  topSuppliers = [],
+  topCustomers = [],
+  topEmployees = [],
+  incomeStatement,
+  onMonthClick,
+  onResetFilter,
+  dateFilter,
+  onNavigateToTab,
+  anomaliesCount,
+  anomaliesSummary,
+  appMode,
+  tenantId
+}) => {
+  const { profile } = useAuth();
+  const [selectedMonth, setSelectedMonth] = useState<any>(null);
+  const [traceData, setTraceData] = useState<any[] | null>(null);
+  const [showTraceModal, setShowTraceModal] = useState(false);
+  const [isTracing, setIsTracing] = useState(false);
+  const [traceTitle, setTraceTitle] = useState('');
+  const [debugTrace, setDebugTrace] = useState<any>(null);
+  
+  const handleFetchTrace = async (moduleId: string, displayTitle: string, retries = 3): Promise<void> => {
+    setDebugTrace({
+      entityId: moduleId,
+      rawItem: null,
+      type: 'trace',
+      value: displayTitle
+    });
+    
+    console.log("TRACE CLICK DEBUG:", {
+      entityId: moduleId,
+      rawItem: null,
+      type: 'trace',
+      value: displayTitle
+    });
+
+    if (!moduleId || moduleId === 'undefined' || moduleId === 'null') {
+      console.error("INVALID TRACE SOURCE — NO ENTITY ID");
+      // Don't call API but continue showing UI so user knows it failed.
+      return;
+    }
+
+    setIsTracing(true);
+    setTraceTitle(displayTitle);
+    try {
+      if (!tenantId) {
+         setTraceData([]);
+         setShowTraceModal(true);
+         return;
+      }
+      const token = await auth.currentUser?.getIdToken() || '';
+      const res = await fetch(`/api/erp/audit-trace/${encodeURIComponent(moduleId)}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      const json = await res.json();
+      
+      // Since backend uses 'wrap', the response is inside json.data
+      const innerData = json.data || json;
+      
+      if (innerData && innerData.success !== false) {
+        setTraceData(innerData.data || innerData.entries || innerData);
+      } else {
+        setTraceData({ error: innerData?.reason || innerData?.error || json.error || 'Unknown Error' } as any);
+      }
+      setShowTraceModal(true);
+    } catch (err: any) {
+      if (err?.message === 'Failed to fetch' && retries > 0) {
+        console.warn('Retrying trace fetch...', retries);
+        await new Promise(r => setTimeout(r, 1000));
+        return handleFetchTrace(moduleId, displayTitle, retries - 1);
+      }
+      console.error("Trace fetch error:", err);
+      setTraceData({ error: err?.message || 'Unknown Error' } as any);
+    } finally {
+      setIsTracing(false);
+    }
+  };
+
+  const handleEntityTrace = async (entityId: string, entityName: string, retries = 3): Promise<void> => {
+    if (!entityId) {
+      alert("لا يتوفر معرف لهذا الكيان لاستعراض معاملاته (Entity_ID مفقود)");
+      return;
+    }
+    setIsTracing(true);
+    setTraceTitle(`معاملات: ${entityName}`);
+    try {
+      const token = await auth.currentUser?.getIdToken() || '';
+      const res = await fetch(`/api/erp/audit-trace/${encodeURIComponent(entityId)}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      const json = await res.json();
+      
+      const innerData = json.data || json;
+      
+      if (innerData && innerData.success !== false) {
+        const traceEntries = innerData.data || innerData.entries || innerData || [];
+        setTraceData(traceEntries);
+      } else {
+        setTraceData([]);
+      }
+      setShowTraceModal(true);
+    } catch (err: any) {
+      if (err?.message === 'Failed to fetch' && retries > 0) {
+        console.warn('Retrying entity trace fetch...', retries);
+        await new Promise(r => setTimeout(r, 1000));
+        return handleEntityTrace(entityId, entityName, retries - 1);
+      }
+      console.error("Entity trace error:", err);
+      setTraceData({ error: err?.message || 'Unknown Error' } as any);
+    } finally {
+      setIsTracing(false);
+    }
+  };
+
+  const COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316'];
+
+  const entLabel = appMode === 'expenses' ? 'الموردين' : (appMode === 'revenues' ? 'العملاء' : 'الموظفين');
+  const singleEntLabel = appMode === 'expenses' ? 'مورد' : (appMode === 'revenues' ? 'عميل' : 'موظف');
+
+  const kpis = useMemo(() => {
+    if (appMode === 'reports') {
+      const rev = incomeStatement?.totalRevenue ?? 0;
+      const exp = ((incomeStatement?.totalOPEX || 0) + (incomeStatement?.totalCOGS || 0));
+      const pay = incomeStatement?.totalPayroll ?? 0;
+      const noi = (incomeStatement?.netOperatingIncome || 0);
+
+      return [
+        {
+          title: 'إجمالي الإيرادات',
+          value: rev,
+          icon: TrendingUp,
+          color: 'indigo',
+          trend: chartDataRaw?.length > 1 ? 
+            (((chartDataRaw[chartDataRaw.length - 1]?.الإيرادات || 0) - (chartDataRaw[chartDataRaw.length - 2]?.الإيرادات || 0)) / (chartDataRaw[chartDataRaw.length - 2]?.الإيرادات || 1)) * 100 
+            : 0
+        },
+        {
+          title: 'إجمالي المصروفات',
+          value: exp,
+          icon: TrendingDown,
+          color: 'rose',
+          trend: chartDataRaw?.length > 1 ? 
+            (((chartDataRaw[chartDataRaw.length - 1]?.المصروفات || 0) - (chartDataRaw[chartDataRaw.length - 2]?.المصروفات || 0)) / (chartDataRaw[chartDataRaw.length - 2]?.المصروفات || 1)) * 100 
+            : 0
+        },
+        {
+          title: 'صافي الربح التشغيلي',
+          value: noi,
+          icon: DollarSign,
+          color: 'emerald',
+          trend: backendStats ? (rev > 0 ? (noi / rev) * 100 : 0) : (incomeStatement?.netMargin || 0)
+        },
+        {
+          title: 'التنبيهات والملاحظات',
+          value: anomaliesCount,
+          icon: AlertCircle,
+          color: 'amber',
+          isCount: true
+        }
+      ];
+    }
+
+    // Module-specific KPIs
+    const modeLabel = appMode === 'expenses' ? 'المصروفات' : (appMode === 'revenues' ? 'الإيرادات' : (appMode === 'banks' ? 'البنوك' : 'الرواتب'));
+    
+    if (appMode === 'payroll') {
+      return [
+        {
+          title: 'إجمالي الرواتب الأساسية',
+          value: incomeStatement.totalTaxable, // Assuming taxable holds basic salary
+          icon: Target,
+          color: 'indigo'
+        },
+        {
+          title: 'إجمالي البدلات',
+          value: incomeStatement.totalNonTaxable, // Assuming non-taxable holds allowances
+          icon: Shield,
+          color: 'emerald'
+        },
+        {
+          title: 'إجمالي الاستقطاعات',
+          value: incomeStatement.totalVAT, // Assuming VAT holds deductions
+          icon: TrendingDown,
+          color: 'rose'
+        },
+        {
+          title: 'صافي الرواتب المدفوعة',
+          value: incomeStatement.totalGross,
+          icon: DollarSign,
+          color: 'blue'
+        },
+        {
+          title: `عدد الموظفين`,
+          value: incomeStatement.entityCount,
+          icon: Users,
+          color: 'violet',
+          isCount: true
+        },
+        {
+          title: `أعلى راتب`,
+          value: incomeStatement.largestValue,
+          icon: ArrowUpRight,
+          color: 'amber'
+        },
+        {
+          title: 'التنبيهات المكتشفة',
+          value: anomaliesCount,
+          icon: AlertCircle,
+          color: 'rose',
+          isCount: true
+        }
+      ];
+    }
+
+    return [
+      {
+        title: appMode === 'banks' ? `إجمالي الإيداعات (${modeLabel})` : `الأساس الخاضع للضريبة (${modeLabel})`,
+        value: incomeStatement.totalTaxable,
+        icon: Target,
+        color: 'indigo'
+      },
+      {
+        title: appMode === 'banks' ? `إجمالي السحوبات (${modeLabel})` : `غير خاضع للضريبة (${modeLabel})`,
+        value: incomeStatement.totalNonTaxable,
+        icon: Shield,
+        color: 'slate'
+      },
+      {
+        title: appMode === 'banks' ? `الرصيد (${modeLabel})` : `الإجمالي قبل الضريبة (${modeLabel})`,
+        value: incomeStatement.totalNet,
+        icon: LineChartIcon,
+        color: 'blue'
+      },
+      {
+        title: appMode === 'banks' ? `العمولات البنكية (${modeLabel})` : `قيمة الضريبة (${modeLabel})`,
+        value: incomeStatement.totalVAT,
+        icon: Zap,
+        color: 'amber'
+      },
+      {
+        title: appMode === 'banks' ? `الرصيد النهائي (${modeLabel})` : `الإجمالي النهائي (${modeLabel})`,
+        value: incomeStatement.totalGross,
+        icon: DollarSign,
+        color: 'emerald'
+      },
+      {
+        title: `عدد ${entLabel}`,
+        value: incomeStatement.entityCount,
+        icon: Users,
+        color: 'violet',
+        isCount: true
+      },
+      {
+        title: `أكبر قيمة (${singleEntLabel})`,
+        value: incomeStatement.largestValue,
+        icon: ArrowUpRight,
+        color: 'rose'
+      },
+      {
+        title: 'التنبيهات المكتشفة',
+        value: anomaliesCount,
+        icon: AlertCircle,
+        color: 'rose',
+        isCount: true
+      }
+    ];
+  }, [incomeStatement, chartDataRaw, anomaliesCount, appMode, entLabel, singleEntLabel]);
+
+  const executiveInsights = useMemo(() => {
+    const insights = [];
+    
+    if (appMode === 'payroll') {
+      if (incomeStatement.totalNonTaxable > (incomeStatement.totalTaxable * 0.3)) {
+        insights.push({ text: 'نسبة البدلات مرتفعة مقارنة بالراتب الأساسي (أكثر من 30%).', type: 'warning' });
+      }
+      if (incomeStatement.totalVAT > (incomeStatement.totalGross * 0.1)) {
+        insights.push({ text: 'نسبة الاستقطاعات تتجاوز 10% من إجمالي الرواتب.', type: 'warning' });
+      }
+      if (anomaliesCount > 0) {
+        insights.push({ text: `يوجد ${anomaliesCount} ملاحظة في مسير الرواتب تتطلب المراجعة.`, type: 'danger' });
+      } else {
+        insights.push({ text: 'مسير الرواتب سليم ولا يوجد به تناقضات.', type: 'success' });
+      }
+    } else {
+      const rev = incomeStatement?.totalRevenue ?? 0;
+      const cogs = incomeStatement?.totalCOGS ?? 0;
+      const noi = incomeStatement?.netOperatingIncome ?? 0;
+      const margin = rev > 0 ? (noi / rev) * 100 : 0;
+
+      if (margin > 20) {
+        insights.push({ text: 'أداء مالي قوي مع هامش ربح ممتاز يتجاوز 20%.', type: 'success' });
+      } else if (margin < 5 && rev > 0) {
+        insights.push({ text: 'هامش الربح منخفض، قد تحتاج لمراجعة تكاليف التشغيل.', type: 'warning' });
+      }
+
+      if (cogs > rev * 0.4) {
+        insights.push({ text: 'تكلفة المواد (COGS) مرتفعة مقارنة بالمبيعات.', type: 'danger' });
+      }
+
+      if (anomaliesCount > 5) {
+        insights.push({ text: `تم اكتشاف ${anomaliesCount} ملاحظة تتطلب المراجعة في سجلاتك.`, type: 'warning' });
+      }
+    }
+
+    return insights;
+  }, [incomeStatement, anomaliesCount, appMode, backendStats]);
+
+  const handleManualSync = async () => {
+    try {
+      const token = await auth.currentUser?.getIdToken();
+      if (!token) return;
+      await fetch('/api/erp/aggregates/recalculate', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      alert('تم إرسال طلب التحديث بنجاح، يرجى الانتظار وتحديث الصفحة لاحقاً.');
+    } catch(e) {
+      alert('Failed to trigger recalculation');
+    }
+  }
+
+  if (Object.keys(chartDataRaw || {}).length === 0 && (!backendStats || backendStats.notComputed)) {
+    return (
+     <div className="max-w-7xl mx-auto space-y-8 animate-in fade-in duration-500 pb-12 px-4">
+        <div className="bg-rose-50 text-rose-800 p-12 rounded-2xl border-2 border-rose-200 flex flex-col items-center justify-center text-center col-span-full mt-10">
+          <AlertCircle className="w-12 h-12 mb-4 text-rose-500" />
+          <h2 className="text-2xl font-bold mb-2">NO DATA — SYSTEM NOT PROCESSING</h2>
+          <p className="text-rose-600 font-medium">Please ensure files were processed successfully, and records are synced.</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-7xl mx-auto space-y-8 animate-in fade-in duration-500 pb-12 px-4">
+      {backendStats?.notComputed && Object.keys(chartDataRaw || {}).length > 0 && (
+        <div className="bg-yellow-50 text-yellow-800 p-4 rounded-xl border border-yellow-200 flex flex-col md:flex-row items-center justify-between gap-4">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-5 h-5" />
+            <div>
+              <p className="font-semibold">تحديث البيانات مطلوب</p>
+              <p className="text-sm opacity-80">{backendStats?.message || 'Dashboard data is out of sync.'}</p>
+            </div>
+          </div>
+          <button onClick={handleManualSync} className="px-4 py-2 bg-yellow-600 text-white rounded-lg hover:bg-yellow-700 transition">
+            تحديث البيانات الآن (Sync)
+          </button>
+        </div>
+      )}
+      
+      {/* Executive Insights Section */}
+      <motion.div 
+        initial={{ opacity: 0, y: -20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="grid grid-cols-1 md:grid-cols-3 gap-4"
+      >
+        {(Array.isArray(executiveInsights) ? executiveInsights : []).map((insight, idx) => (
+          <div key={idx} className={`p-4 rounded-2xl border flex items-start gap-3 ${
+            insight.type === 'success' ? 'bg-emerald-50 border-emerald-100 text-emerald-800' :
+            insight.type === 'warning' ? 'bg-amber-50 border-amber-100 text-amber-800' :
+            'bg-rose-50 border-rose-100 text-rose-800'
+          }`}>
+            <Zap className="w-5 h-5 shrink-0 mt-0.5" />
+            <p className="text-sm font-bold leading-relaxed">{insight.text}</p>
+          </div>
+        ))}
+      </motion.div>
+
+      {/* KPI Cards Grid */}
+      <div className={`grid grid-cols-1 sm:grid-cols-2 ${appMode === 'reports' ? 'lg:grid-cols-4' : 'lg:grid-cols-4'} gap-6`}>
+        {(Array.isArray(kpis) ? kpis : []).map((kpi: any, idx) => (
+          <motion.div
+            key={idx}
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ delay: idx * 0.1 }}
+            onClick={() => {
+              if (kpi.title.includes('إيرادات')) handleFetchTrace('revenues', 'إجمالي الإيرادات');
+              if (kpi.title.includes('مصروفات')) handleFetchTrace('expenses', 'إجمالي المصروفات');
+            }}
+            className={`bg-white p-6 rounded-3xl border border-slate-200 shadow-sm hover:shadow-xl hover:border-${kpi.color}-300 transition-all group cursor-pointer relative overflow-hidden`}
+          >
+            <div className="flex justify-between items-start mb-4">
+              <div className={`p-3 rounded-2xl bg-${kpi.color}-50 text-${kpi.color}-600 group-hover:scale-110 transition-transform`}>
+                <kpi.icon className="w-6 h-6" />
+              </div>
+              <div className="flex flex-col items-end">
+                <Search className={`w-3 h-3 text-slate-200 group-hover:text-${kpi.color}-500 transition-colors mb-2`} />
+                {kpi.trend !== undefined && (
+                  <div className={`flex items-center gap-1 text-xs font-black ${kpi.trend >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                    {kpi.trend >= 0 ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
+                    {Math.abs(kpi.trend).toFixed(1)}%
+                  </div>
+                )}
+              </div>
+            </div>
+            <p className="text-slate-500 text-xs font-bold mb-1">{kpi.title}</p>
+            <h4 className="text-2xl font-black text-slate-900">
+              {kpi.isCount ? kpi.value : formatCurrency(kpi.value)}
+            </h4>
+          </motion.div>
+        ))}
+      </div>
+
+      {/* Selected Month Details Modal/Section */}
+      {selectedMonth && (
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="bg-slate-900 rounded-[2.5rem] p-8 border border-slate-800 shadow-2xl text-white relative overflow-hidden"
+        >
+          <div className="absolute top-0 right-0 w-64 h-64 bg-indigo-500/10 blur-[100px] -mr-32 -mt-32 rounded-full"></div>
+          <div className="absolute bottom-0 left-0 w-64 h-64 bg-emerald-500/10 blur-[100px] -ml-32 -mb-32 rounded-full"></div>
+          
+          <div className="relative z-10">
+            <div className="flex justify-between items-center mb-8">
+              <div>
+                <h3 className="text-2xl font-black flex items-center gap-3">
+                  <Calendar className="w-8 h-8 text-indigo-400" /> تفاصيل شهر {selectedMonth.name}
+                </h3>
+                <p className="text-slate-400 font-medium mt-1">تحليل معمق للبيانات المالية خلال هذه الفترة</p>
+              </div>
+              <button 
+                onClick={() => setSelectedMonth(null)}
+                className="bg-white/10 hover:bg-white/20 p-2 rounded-full transition-colors"
+              >
+                <CheckCircle className="w-6 h-6 text-white" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+              <div className="bg-white/5 p-6 rounded-3xl border border-white/10">
+                <p className="text-slate-400 text-xs font-bold mb-1 uppercase tracking-wider">{appMode === 'banks' ? 'إيداعات' : (appMode === 'payroll' ? 'الرواتب' : 'الإيرادات')}</p>
+                <h4 className="text-2xl font-black text-indigo-400" dir="ltr">{formatCurrency(selectedMonth.الإيرادات || selectedMonth.إيداعات || selectedMonth.الرواتب || 0)}</h4>
+              </div>
+              <div className="bg-white/5 p-6 rounded-3xl border border-white/10">
+                <p className="text-slate-400 text-xs font-bold mb-1 uppercase tracking-wider">{appMode === 'banks' ? 'سحوبات' : (appMode === 'payroll' ? 'البدلات' : 'المصروفات')}</p>
+                <h4 className="text-2xl font-black text-rose-400" dir="ltr">{formatCurrency(selectedMonth.المصروفات || selectedMonth.سحوبات || selectedMonth.البدلات || 0)}</h4>
+              </div>
+              <div className="bg-white/5 p-6 rounded-3xl border border-white/10">
+                <p className="text-slate-400 text-xs font-bold mb-1 uppercase tracking-wider">{appMode === 'banks' ? 'عمولات' : (appMode === 'payroll' ? 'الاستقطاعات' : 'الرواتب')}</p>
+                <h4 className="text-2xl font-black text-amber-400" dir="ltr">{formatCurrency(appMode === 'payroll' ? selectedMonth.الاستقطاعات : (selectedMonth.الرواتب || selectedMonth.عمولات || 0))}</h4>
+              </div>
+              <div className="bg-white/5 p-6 rounded-3xl border border-white/10">
+                <p className="text-slate-400 text-xs font-bold mb-1 uppercase tracking-wider">{appMode === 'banks' ? 'الرصيد' : (appMode === 'payroll' ? 'صافي الرواتب' : 'صافي الربح')}</p>
+                <h4 className={`text-2xl font-black ${selectedMonth.الربح >= 0 || selectedMonth.الرصيد >= 0 || appMode === 'payroll' ? 'text-emerald-400' : 'text-rose-400'}`} dir="ltr">{formatCurrency(appMode === 'payroll' ? selectedMonth.الصافي : (selectedMonth.الربح || selectedMonth.الرصيد || 0))}</h4>
+                {appMode !== 'banks' && appMode !== 'payroll' && <p className="text-[10px] font-bold text-slate-500 mt-1">هامش الربح: %{selectedMonth.هامش_الربح}</p>}
+              </div>
+            </div>
+          </div>
+        </motion.div>
+      )}
+
+      {/* Main Charts Section */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        
+        {/* Performance Trend Chart - 2/3 width */}
+        <div className="lg:col-span-2 bg-white p-8 rounded-[2.5rem] border border-slate-200 shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-4 mb-8">
+            <div>
+              <h3 className="text-xl font-black text-slate-900 flex items-center gap-2">
+                <Activity className="w-6 h-6 text-indigo-500" /> {appMode === 'reports' ? 'تحليل الأداء المالي الزمني' : `تحليل اتجاه ${appMode === 'expenses' ? 'المصروفات' : (appMode === 'revenues' ? 'الإيرادات' : (appMode === 'banks' ? 'البنوك' : 'الرواتب'))}`}
+              </h3>
+              <p className="text-slate-500 text-sm font-medium mt-1">
+                {appMode === 'reports' ? 'مقارنة الإيرادات والمصروفات والربحية شهرياً' : `تتبع حركة ${appMode === 'expenses' ? 'الإنفاق' : (appMode === 'revenues' ? 'المبيعات' : (appMode === 'banks' ? 'الحسابات البنكية' : 'الأجور'))} عبر الزمن`}
+              </p>
+            </div>
+            {dateFilter && (dateFilter.month || dateFilter.year || dateFilter.start || (dateFilter.searchQuery !== undefined ? dateFilter.searchQuery : false)) && onResetFilter && (
+              <button
+                onClick={onResetFilter}
+                className="flex items-center gap-2 px-4 py-2 bg-amber-100 text-amber-800 rounded-xl hover:bg-amber-200 transition-all font-bold text-xs shadow-sm border border-amber-200"
+              >
+                <X className="w-4 h-4" /> عرض كافة البيانات
+              </button>
+            )}
+          </div>
+          
+          <div className="h-[400px] w-full" dir="ltr">
+            <ResponsiveContainer width="100%" height="100%">
+              <ComposedChart 
+                data={chartDataRaw} 
+                margin={{ top: 10, right: 10, left: 0, bottom: 0 }}
+                onClick={(data: any) => {
+                  if (data && data.activePayload && data.activePayload.length > 0) {
+                    setSelectedMonth(data.activePayload[0].payload);
+                  }
+                  if (data && data.activeLabel && onMonthClick) {
+                    const rawMonth = chartDataRaw.find((d: any) => d.name === data.activeLabel)?.rawMonth;
+                    if (rawMonth) onMonthClick(rawMonth);
+                  }
+                }}
+              >
+                <defs>
+                  <linearGradient id="gradRev" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#6366f1" stopOpacity={0.1}/>
+                    <stop offset="95%" stopColor="#6366f1" stopOpacity={0}/>
+                  </linearGradient>
+                  <linearGradient id="gradExp" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#ef4444" stopOpacity={0.1}/>
+                    <stop offset="95%" stopColor="#ef4444" stopOpacity={0}/>
+                  </linearGradient>
+                  <linearGradient id="gradPay" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.1}/>
+                    <stop offset="95%" stopColor="#f59e0b" stopOpacity={0}/>
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                <XAxis 
+                  dataKey="name" 
+                  axisLine={false} 
+                  tickLine={false} 
+                  tick={{fill: '#64748b', fontSize: 11, fontWeight: 600}} 
+                  dy={15} 
+                />
+                <YAxis 
+                  axisLine={false} 
+                  tickLine={false} 
+                  tick={{fill: '#64748b', fontSize: 11, fontWeight: 600}} 
+                  tickFormatter={(value) => `${(value/1000).toFixed(0)}k`} 
+                  dx={-10} 
+                />
+                <Tooltip content={<CustomTooltip />} cursor={{ stroke: '#e2e8f0', strokeWidth: 2 }} />
+                <Legend 
+                  verticalAlign="top" 
+                  align="right" 
+                  height={50} 
+                  iconType="circle"
+                  wrapperStyle={{ fontWeight: 'bold', fontSize: '12px', paddingBottom: '20px' }}
+                />
+                {(appMode === 'reports' || appMode === 'revenues') && (
+                  <Area 
+                    type="monotone" 
+                    dataKey="الإيرادات" 
+                    stroke="#6366f1" 
+                    strokeWidth={4} 
+                    fillOpacity={1} 
+                    fill="url(#gradRev)" 
+                    animationDuration={1500}
+                  />
+                )}
+                {(appMode === 'reports' || appMode === 'expenses') && (
+                  <Area 
+                    type="monotone" 
+                    dataKey="المصروفات" 
+                    stroke="#ef4444" 
+                    strokeWidth={4} 
+                    fillOpacity={1} 
+                    fill="url(#gradExp)" 
+                    animationDuration={1500}
+                  />
+                )}
+                {(appMode === 'reports' || appMode === 'payroll') && (
+                  <Area 
+                    type="monotone" 
+                    dataKey="الرواتب" 
+                    stroke="#f59e0b" 
+                    strokeWidth={4} 
+                    fillOpacity={1} 
+                    fill="url(#gradPay)" 
+                    animationDuration={1500}
+                  />
+                )}
+                {appMode === 'reports' && (
+                  <Line 
+                    type="monotone" 
+                    dataKey="الربح" 
+                    stroke="#10b981" 
+                    strokeWidth={3} 
+                    dot={{ r: 4, fill: '#10b981', strokeWidth: 2, stroke: '#fff' }}
+                    activeDot={{ r: 6, strokeWidth: 0 }}
+                    animationDuration={2000}
+                  />
+                )}
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        {/* Structure Chart - 1/3 width */}
+        <div className="bg-white p-8 rounded-[2.5rem] border border-slate-200 shadow-sm flex flex-col">
+          <h3 className="text-xl font-black text-slate-900 mb-2 flex items-center gap-2">
+            <PieChartIcon className={`w-6 h-6 ${appMode === 'revenues' ? 'text-indigo-500' : (appMode === 'expenses' ? 'text-rose-500' : (appMode === 'banks' ? 'text-blue-500' : 'text-amber-500'))}`} /> 
+            {appMode === 'revenues' ? 'هيكل الإيرادات' : (appMode === 'payroll' ? 'هيكل الرواتب والبدلات' : (appMode === 'banks' ? 'هيكل الإيداعات' : 'هيكل المصروفات'))}
+          </h3>
+          <p className="text-slate-500 text-sm font-medium mb-8">توزيع {appMode === 'revenues' ? 'المبيعات' : (appMode === 'payroll' ? 'عناصر الأجر' : (appMode === 'banks' ? 'الإيداعات' : 'التكاليف'))} حسب الفئة</p>
+          
+          <div className="flex-1 h-72 w-full relative" dir="ltr">
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie 
+                  data={appMode === 'revenues' ? (Array.isArray(revPieData) ? revPieData : []) : (appMode === 'payroll' ? (Array.isArray(expPieData) ? expPieData : []) : (Array.isArray(expPieData) ? expPieData : []))} 
+                  cx="50%" 
+                  cy="50%" 
+                  innerRadius={80} 
+                  outerRadius={110} 
+                  paddingAngle={8} 
+                  dataKey="value"
+                  animationBegin={500}
+                  animationDuration={1500}
+                >
+                  {(Array.isArray(appMode === 'revenues' ? revPieData : expPieData) ? (appMode === 'revenues' ? revPieData : expPieData) : []).map((entry: any, index: number) => (
+                    <Cell 
+                      key={`cell-${index}`} 
+                      fill={COLORS[index % COLORS.length]} 
+                      stroke="none" 
+                      onClick={() => {
+                        if (onNavigateToTab && entry && entry.name) {
+                          onNavigateToTab('categories_summary', entry.name, entry.name, appMode === 'reports' ? 'expenses' : undefined);
+                        }
+                      }}
+                      style={{ cursor: 'pointer', outline: 'none' }}
+                      className="hover:opacity-80 transition-opacity"
+                    />
+                  ))}
+                </Pie>
+                <Tooltip formatter={(value: number) => formatCurrency(value)} />
+              </PieChart>
+            </ResponsiveContainer>
+            <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+              <span className="text-slate-400 text-[10px] font-black uppercase tracking-widest">الإجمالي</span>
+              <span className="text-xl font-black text-slate-900">
+                {formatCurrency(appMode === 'revenues' ? incomeStatement.totalRevenue : (appMode === 'banks' ? incomeStatement.totalRevenue : (appMode === 'payroll' ? incomeStatement.totalGross : (incomeStatement.totalOPEX + incomeStatement.totalCOGS))))}
+              </span>
+            </div>
+          </div>
+          
+          <div className="mt-8 space-y-3">
+            {(Array.isArray(appMode === 'revenues' ? revPieData : expPieData) ? (appMode === 'revenues' ? revPieData : expPieData) : []).slice(0, 5).map((item: any, idx: number) => (
+              <div key={idx} className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: COLORS[idx % COLORS.length] }} />
+                  <span className="text-xs font-bold text-slate-700 truncate max-w-[150px]">{item.name}</span>
+                </div>
+                <span className="text-xs font-black text-slate-900">
+                  {((item.value / (appMode === 'revenues' ? (incomeStatement?.totalRevenue || 1) : (appMode === 'banks' ? (incomeStatement?.totalRevenue || 1) : (appMode === 'payroll' ? (incomeStatement?.totalGross || 1) : ((incomeStatement?.totalOPEX || 0) + (incomeStatement?.totalCOGS || 0) || 1))))) * 100).toFixed(1)}%
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Top Entities Section */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        {/* Top Entities Chart (Dynamic based on mode or fixed for reports) */}
+        {appMode !== 'reports' ? (
+          <div className="bg-white p-8 rounded-[2.5rem] border border-slate-200 shadow-sm flex flex-col">
+            <div className="mb-8">
+              <h3 className="text-xl font-black text-slate-900 flex items-center gap-2">
+                <Users className="w-6 h-6 text-indigo-500" /> {appMode === 'payroll' ? 'أعلى الموظفين تكلفة' : `تحليل كبار ${entLabel}`}
+              </h3>
+              <p className="text-slate-500 text-sm font-medium mt-1">أعلى 5 {entLabel} من حيث {appMode === 'payroll' ? 'إجمالي الرواتب' : 'حجم التعامل المالي'}</p>
+            </div>
+            
+            <div className="flex-1 h-72 w-full" dir="ltr">
+              {topEntitiesData.length > 0 ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={topEntitiesData} layout="vertical" margin={{ top: 5, right: 30, left: 40, bottom: 5 }}>
+                    <CartesianGrid strokeDasharray="3 3" horizontal={true} vertical={false} stroke="#f1f5f9" />
+                    <XAxis type="number" hide />
+                    <YAxis 
+                      dataKey="name" 
+                      type="category" 
+                      axisLine={false} 
+                      tickLine={false} 
+                      tick={{fill: '#0f172a', fontSize: 11, fontWeight: 700}} 
+                      width={140} 
+                    />
+                    <Tooltip formatter={(value: number) => formatCurrency(value)} cursor={{fill: '#f8fafc'}} />
+                    <Bar dataKey="value" name="المبلغ" fill="#6366f1" radius={[0, 8, 8, 0]} barSize={30}>
+                      {(Array.isArray(topEntitiesData) ? topEntitiesData : []).map((entry: any, index: number) => (
+                        <Cell 
+                          key={`cell-${index}`} 
+                          fill={COLORS[index % COLORS.length]} 
+                          onClick={() => {
+                            if (onNavigateToTab && entry && entry.name) {
+                              onNavigateToTab('grouped_purchases', undefined, entry.name);
+                            }
+                          }}
+                          style={{ cursor: 'pointer' }}
+                        />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              ) : (
+                <div className="h-full flex flex-col items-center justify-center text-slate-400 gap-2">
+                  <Users className="w-12 h-12 opacity-20" />
+                  <p className="text-sm font-bold">لا توجد بيانات متاحة حالياً</p>
+                </div>
+              )}
+            </div>
+          </div>
+        ) : (
+          <>
+            {/* Top Suppliers */}
+            <div className="bg-white p-8 rounded-[2.5rem] border border-slate-200 shadow-sm flex flex-col">
+              <div className="mb-8">
+                <h3 className="text-xl font-black text-slate-900 flex items-center gap-2">
+                  <Users className="w-6 h-6 text-rose-500" /> تحليل كبار الموردين
+                </h3>
+                <p className="text-slate-500 text-sm font-medium mt-1">أعلى 5 الموردين من حيث حجم التعامل المالي</p>
+              </div>
+              <div className="flex-1 h-64 w-full" dir="ltr">
+                {(Array.isArray(topSuppliers) ? topSuppliers : []).length > 0 ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={topSuppliers} layout="vertical" margin={{ top: 5, right: 30, left: 40, bottom: 5 }}>
+                      <XAxis type="number" hide />
+                      <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{fill: '#0f172a', fontSize: 10, fontWeight: 700}} width={120} />
+                      <Tooltip formatter={(v: any) => formatCurrency(v)} />
+                      <Bar 
+                        dataKey="value" 
+                        fill="#ef4444" 
+                        radius={[0, 8, 8, 0]} 
+                        onClick={(data) => {
+                          if (onNavigateToTab && data && data.name) {
+                            onNavigateToTab('grouped_purchases', undefined, data.name, 'expenses');
+                          }
+                        }}
+                        style={{ cursor: 'pointer' }}
+                      />
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="h-full flex flex-col items-center justify-center text-slate-400 gap-2">
+                    <Users className="w-12 h-12 opacity-20" />
+                    <p className="text-sm font-bold">لا توجد بيانات متاحة حالياً</p>
+                  </div>
+                )}
+              </div>
+            </div>
+            {/* Top Customers */}
+            <div className="bg-white p-8 rounded-[2.5rem] border border-slate-200 shadow-sm flex flex-col">
+              <div className="mb-8">
+                <h3 className="text-xl font-black text-slate-900 flex items-center gap-2">
+                  <Users className="w-6 h-6 text-indigo-500" /> تحليل كبار العملاء
+                </h3>
+                <p className="text-slate-500 text-sm font-medium mt-1">أعلى 5 العملاء من حيث حجم التعامل المالي</p>
+              </div>
+              <div className="flex-1 h-64 w-full" dir="ltr">
+                {(Array.isArray(topCustomers) ? topCustomers : []).length > 0 ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={topCustomers} layout="vertical" margin={{ top: 5, right: 30, left: 40, bottom: 5 }}>
+                      <XAxis type="number" hide />
+                      <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{fill: '#0f172a', fontSize: 10, fontWeight: 700}} width={120} />
+                      <Tooltip formatter={(v: any) => formatCurrency(v)} />
+                      <Bar 
+                        dataKey="value" 
+                        fill="#6366f1" 
+                        radius={[0, 8, 8, 0]} 
+                        onClick={(data: any) => {
+                          const eId = data?.payload?.entityId || data?.entityId;
+                          handleEntityTrace(eId, data?.name || 'غير معروف');
+                        }}
+                        style={{ cursor: 'pointer' }}
+                      />
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="h-full flex flex-col items-center justify-center text-slate-400 gap-2">
+                    <Users className="w-12 h-12 opacity-20" />
+                    <p className="text-sm font-bold">لا توجد بيانات متاحة حالياً</p>
+                  </div>
+                )}
+              </div>
+            </div>
+            {/* Top Salaries */}
+            <div className="bg-white p-8 rounded-[2.5rem] border border-slate-200 shadow-sm flex flex-col lg:col-span-2">
+              <div className="mb-8">
+                <h3 className="text-xl font-black text-slate-900 flex items-center gap-2">
+                  <Users className="w-6 h-6 text-amber-500" /> تحليل كبار الموظفين
+                </h3>
+                <p className="text-slate-500 text-sm font-medium mt-1">أعلى 5 موظفين من حيث إجمالي الرواتب</p>
+              </div>
+              <div className="flex-1 h-64 w-full" dir="ltr">
+                {(Array.isArray(topEmployees) ? topEmployees : []).length > 0 ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={topEmployees} layout="vertical" margin={{ top: 5, right: 30, left: 40, bottom: 5 }}>
+                      <XAxis type="number" hide />
+                      <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{fill: '#0f172a', fontSize: 10, fontWeight: 700}} width={120} />
+                      <Tooltip formatter={(v: any) => formatCurrency(v)} />
+                      <Bar 
+                        dataKey="value" 
+                        fill="#f59e0b" 
+                        radius={[0, 8, 8, 0]} 
+                        onClick={(data) => {
+                          if (onNavigateToTab && data && data.name) {
+                            onNavigateToTab('grouped_purchases', undefined, data.name, 'payroll');
+                          }
+                        }}
+                        style={{ cursor: 'pointer' }}
+                      />
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="h-full flex flex-col items-center justify-center text-slate-400 gap-2">
+                    <Users className="w-12 h-12 opacity-20" />
+                    <p className="text-sm font-bold">لا توجد بيانات متاحة حالياً</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* Categories Chart */}
+        <div className="bg-white p-8 rounded-[2.5rem] border border-slate-200 shadow-sm flex flex-col">
+          <div className="mb-8">
+            <h3 className="text-xl font-black text-slate-900 flex items-center gap-2">
+              {appMode === 'revenues' ? <TrendingUp className="w-6 h-6 text-emerald-500" /> : (appMode === 'banks' ? <Activity className="w-6 h-6 text-blue-500" /> : <TrendingDown className="w-6 h-6 text-rose-500" />)}
+              {appMode === 'revenues' ? 'تحليل فئات الإيرادات' : (appMode === 'payroll' ? 'تحليل فئات الرواتب' : (appMode === 'banks' ? 'تحليل فئات الإيداعات' : 'تحليل فئات الإنفاق'))}
+            </h3>
+            <p className="text-slate-500 text-sm font-medium mt-1">الفئات من حيث {appMode === 'revenues' ? 'القيمة الإجمالية' : (appMode === 'payroll' ? 'التكلفة الإجمالية' : (appMode === 'banks' ? 'قيمة الإيداعات' : 'التكلفة الإجمالية'))} <span className="text-indigo-500 opacity-80">(لأكبر 5 فئات)</span></p>
+          </div>
+          
+          <div className="flex-1 h-72 w-full overflow-y-auto custom-scrollbar" dir="ltr">
+            {(Array.isArray(appMode === 'revenues' ? revPieData : expBarData) ? (appMode === 'revenues' ? revPieData : expBarData) : []).slice(0, 5).length > 0 ? (
+              <ResponsiveContainer width="100%" height={Math.max(288, (Array.isArray(appMode === 'revenues' ? revPieData : expBarData) ? (appMode === 'revenues' ? revPieData : expBarData) : []).slice(0, 5).length * 40)}>
+                <BarChart data={(Array.isArray(appMode === 'revenues' ? revPieData : expBarData) ? (appMode === 'revenues' ? revPieData : expBarData) : []).slice(0, 5)} layout="vertical" margin={{ top: 5, right: 30, left: 40, bottom: 5 }}>
+                  <CartesianGrid strokeDasharray="3 3" horizontal={true} vertical={false} stroke="#f1f5f9" />
+                  <XAxis type="number" hide />
+                  <YAxis 
+                    dataKey="name" 
+                    type="category" 
+                    axisLine={false} 
+                    tickLine={false} 
+                    tick={{fill: '#0f172a', fontSize: 11, fontWeight: 700}} 
+                    width={140} 
+                  />
+                  <Tooltip formatter={(value: number) => formatCurrency(value)} cursor={{fill: '#f8fafc'}} />
+                  <Bar dataKey="value" name={appMode === 'revenues' ? 'القيمة' : (appMode === 'banks' ? 'القيمة' : 'التكلفة')} fill={appMode === 'revenues' ? '#10b981' : (appMode === 'banks' ? '#3b82f6' : '#ef4444')} radius={[0, 8, 8, 0]} barSize={30}>
+                    {(Array.isArray(appMode === 'revenues' ? revPieData : expBarData) ? (appMode === 'revenues' ? revPieData : expBarData) : []).slice(0, 5).map((entry: any, index: number) => (
+                      <Cell 
+                        key={`cell-${index}`} 
+                        fill={COLORS[index % COLORS.length]} 
+                        onClick={() => {
+                          if (onNavigateToTab && entry && entry.name) {
+                            onNavigateToTab('categories_summary', entry.name, entry.name, appMode === 'reports' ? 'expenses' : undefined);
+                          }
+                        }}
+                        style={{ cursor: 'pointer' }}
+                      />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="h-full flex flex-col items-center justify-center text-slate-400 gap-2">
+                <TrendingDown className="w-12 h-12 opacity-20" />
+                <p className="text-sm font-bold">لا توجد بيانات متاحة حالياً</p>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Sales vs Margin Section - Only for Reports or Revenues */}
+      {appMode === 'reports' && (
+        <div className="grid grid-cols-1 lg:grid-cols-1 gap-8">
+          <div className="bg-slate-900 p-8 rounded-[2.5rem] border border-slate-800 shadow-2xl text-white">
+            <div className="mb-8">
+              <h3 className="text-xl font-black text-white flex items-center gap-2">
+                <Target className="w-6 h-6 text-blue-400" /> كفاءة المبيعات وهامش الربح
+              </h3>
+              <p className="text-slate-400 text-sm font-medium mt-1">تحليل العلاقة بين حجم المبيعات ونسبة الربحية</p>
+            </div>
+            
+            <div className="h-72 w-full" dir="ltr">
+              <ResponsiveContainer width="100%" height="100%">
+                <ComposedChart 
+                  data={chartDataRaw} 
+                  margin={{ top: 10, right: 10, left: 0, bottom: 0 }}
+                  onClick={(data: any) => {
+                    if (data && data.activePayload && data.activePayload.length > 0) {
+                      setSelectedMonth(data.activePayload[0].payload);
+                    }
+                    if (data && data.activeLabel && onMonthClick) {
+                      const dataArray = Array.isArray(chartDataRaw) ? chartDataRaw : [];
+                      const rawMonth = dataArray.find((d: any) => d.name === data.activeLabel)?.rawMonth;
+                      if (rawMonth) onMonthClick(rawMonth);
+                    }
+                  }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#1e293b" />
+                  <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fill: '#64748b', fontSize: 11}} dy={15} />
+                  <YAxis yAxisId="left" axisLine={false} tickLine={false} tick={{fill: '#64748b', fontSize: 11}} tickFormatter={(value) => `${(value/1000).toFixed(0)}k`} dx={-10} />
+                  <YAxis yAxisId="right" orientation="right" axisLine={false} tickLine={false} tick={{fill: '#f59e0b', fontSize: 11}} tickFormatter={(value) => `${value}%`} dx={10} />
+                  <Tooltip content={<CustomTooltip />} />
+                  <Bar yAxisId="left" dataKey="الإيرادات" fill="#3b82f6" radius={[6, 6, 0, 0]} barSize={35} />
+                  <Line yAxisId="right" type="monotone" dataKey="هامش_الربح" name="هامش الربح (%)" stroke="#f59e0b" strokeWidth={4} dot={{r: 5, fill: '#f59e0b', strokeWidth: 2, stroke: '#0f172a'}} activeDot={{r: 7}} />
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </div>
+      )}
+      <TraceModal 
+        show={showTraceModal}
+        data={traceData}
+        title={traceTitle}
+        onClose={() => setShowTraceModal(false)}
+      />
+
+      {isTracing && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[250] flex items-center justify-center pointer-events-none">
+           <div className="bg-white p-6 rounded-2xl shadow-2xl flex items-center gap-4 animate-in zoom-in-95">
+              <div className="animate-spin rounded-full h-8 w-8 border-4 border-indigo-100 border-t-indigo-600"></div>
+              <p className="font-black text-slate-800">جاري تجميع سلالة البيانات...</p>
+           </div>
+        </div>
+      )}
+    </div>
+  );
+};
+

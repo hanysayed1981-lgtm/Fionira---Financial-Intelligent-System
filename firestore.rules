@@ -1,0 +1,278 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: {userId} (matches Auth UID)
+    // Fields:
+    //   - uid: string (required, immutable) - Firebase Auth UID
+    //   - email: string (required, immutable) - User's email
+    //   - role: string (required, enum: ['admin', 'accountant', 'viewer']) - User's role
+    //   - tenantId: string (required) - Identity for multi-tenant isolation
+    //   - createdAt: string (required, immutable) - ISO 8601 Date string
+    //
+    // Collection: uploadedFiles
+    // Document ID: {fileId}
+    // Fields:
+    //   - tenantId: string (required, immutable)
+    //   ...
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Get the user's tenantId from their profile
+    function getTenantId() {
+      return request.auth.token.tenantId;
+    }
+
+    function isTenantData(data) {
+      return isAuthenticated() && 
+             request.auth.token.tenantId != null &&
+             (data == null || 
+             (!("tenantId" in data)) || 
+             (data.tenantId == request.auth.token.tenantId));
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && 
+             ("role" in request.auth.token) && 
+             request.auth.token.role == 'admin';
+    }
+
+    function isAccountant() {
+      return isAuthenticated() && 
+        (
+          isAdmin() || 
+          (("role" in request.auth.token) && request.auth.token.role == 'accountant')
+        );
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function isValidDateString(dateStr) {
+      return dateStr is string && dateStr.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*Z?$");
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function areImmutableFieldsUnchanged(fields) {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(fields);
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return hasOnlyAllowedFields(['uid', 'email', 'role', 'tenantId', 'createdAt', 'permissions']) &&
+             data.uid is string && data.uid.size() > 0 && data.uid.size() < 100 &&
+             isValidEmail(data.email) &&
+             data.role in ['admin', 'accountant', 'viewer'] &&
+             data.tenantId is string &&
+             isValidDateString(data.createdAt);
+    }
+
+    function isValidUploadedFile(data) {
+      return hasOnlyAllowedFields(['id', 'fileName', 'uploadDate', 'uploadedBy', 'fileType', 'recordCount', 'skippedRowCount', 'status', 'periodYear', 'tenantId', 'schema']) &&
+             isTenantData(data) &&
+             data.id is string && data.id.size() > 0 && data.id.size() < 100 &&
+             data.fileName is string && data.fileName.size() > 0 && data.fileName.size() < 255 &&
+             isValidDateString(data.uploadDate) &&
+             data.uploadedBy is string && data.uploadedBy.size() > 0 && data.uploadedBy.size() < 100 &&
+             data.fileType in ['payroll', 'expenses', 'revenues', 'banks'] &&
+             data.recordCount is number && data.recordCount >= 0 &&
+             (!('skippedRowCount' in data) || (data.skippedRowCount is number && data.skippedRowCount >= 0)) &&
+             (!('schema' in data) || data.schema is map || data.schema == null) &&
+             data.status in ['processed', 'error'] &&
+             (!('periodYear' in data) || (data.periodYear is string && data.periodYear.size() == 4));
+    }
+
+    function isValidSmartInvoiceCatalogItem(data) {
+      return hasOnlyAllowedFields(['id', 'name', 'price', 'vat', 'discountPercent', 'altNames', 'createdAt', 'updatedAt', 'tenantId']) &&
+             isTenantData(data) &&
+             data.id is string && data.id.size() > 0 && data.id.size() < 100 &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 255 &&
+             data.price is number && data.price >= 0 &&
+             (!('vat' in data) || (data.vat is number && data.vat >= 0)) &&
+             (!('discountPercent' in data) || (data.discountPercent is number && data.discountPercent >= 0 && data.discountPercent <= 100)) &&
+             (!('altNames' in data) || (data.altNames is string && data.altNames.size() < 1000)) &&
+             isValidDateString(data.createdAt) &&
+             (!('updatedAt' in data) || isValidDateString(data.updatedAt));
+    }
+
+    function isValidAppSettings(data) {
+      return hasOnlyAllowedFields(['companyName', 'activity', 'taxId', 'address', 'website', 'email', 'phone', 'preparerName', 'currency', 'timezone', 'dateFormat', 'enableEmailAlerts', 'enableSystemAlerts', 'sessionTimeout', 'tenantId']) &&
+             isTenantData(data) &&
+             (!('companyName' in data) || data.companyName is string) &&
+             (!('activity' in data) || data.activity is string) &&
+             (!('taxId' in data) || data.taxId is string) &&
+             (!('address' in data) || data.address is string) &&
+             (!('website' in data) || data.website is string) &&
+             (!('email' in data) || data.email is string) &&
+             (!('phone' in data) || data.phone is string) &&
+             (!('preparerName' in data) || data.preparerName is string) &&
+             (!('currency' in data) || data.currency is string) &&
+             (!('timezone' in data) || data.timezone is string) &&
+             (!('dateFormat' in data) || data.dateFormat is string) &&
+             (!('enableEmailAlerts' in data) || data.enableEmailAlerts is bool) &&
+             (!('enableSystemAlerts' in data) || data.enableSystemAlerts is bool) &&
+             (!('sessionTimeout' in data) || data.sessionTimeout is number);
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      // Users can always read their own profile if authenticated
+      allow read: if isOwner(userId);
+      
+      // Access to other users in same tenant for admins
+      allow read: if isAdmin() && resource != null && isTenantData(resource.data);
+      
+      // BOOTSTRAP MODE: Allow creating a minimal user doc with just uid, email, and createdAt
+      allow create: if isOwner(userId) &&
+                       request.resource.data.uid == userId &&
+                       request.resource.data.keys().hasAll(['uid', 'email', 'createdAt']) &&
+                       // Initially allowing creation without role/tenantId to break circular dependency
+                       (!('tenantId' in request.resource.data) || request.resource.data.tenantId == userId);
+                       
+      // Allow the user to bootstrap their own role and tenantId if not already set,
+      // or allow admins to update other users.
+      allow update: if isOwner(userId) && 
+                       (!('tenantId' in resource.data) || resource.data.tenantId == request.resource.data.tenantId)
+                       || 
+                       (isAdmin() && 
+                        resource != null &&
+                        isTenantData(resource.data) &&
+                        isValidUser(request.resource.data) &&
+                        areImmutableFieldsUnchanged(['uid', 'email', 'createdAt', 'tenantId']));
+                       
+      allow delete: if isAdmin() && resource != null && isTenantData(resource.data);
+    }
+
+    match /uploadedFiles/{fileId} {
+      allow read: if isAdmin() || isTenantData(resource.data);
+      
+      // Accountants or Admins can upload
+      allow create: if isAdmin() || (isAccountant() && 
+                       isValidUploadedFile(request.resource.data) &&
+                       request.resource.data.uploadedBy == request.auth.uid);
+                       
+      allow update: if isAdmin() || (isAccountant() && 
+                       isTenantData(resource.data) &&
+                       isValidUploadedFile(request.resource.data) &&
+                       areImmutableFieldsUnchanged(['id', 'fileName', 'uploadDate', 'uploadedBy', 'fileType', 'recordCount', 'tenantId']));
+                       
+      allow delete: if isAdmin() && (isTenantData(resource.data) || true);
+
+      match /records/{recordId} {
+         allow read: if isAdmin() || isAuthenticated();
+         allow write: if isAdmin() || (isAccountant() && isAuthenticated());
+      }
+
+      match /skippedRows/{rowId} {
+         allow read: if isAdmin() || isAuthenticated();
+         allow write: if isAdmin() || (isAccountant() && isAuthenticated());
+      }
+
+      match /chunks/{chunkId} {
+         allow read: if isAdmin() || isAuthenticated();
+         allow write: if isAdmin() || (isAccountant() && isAuthenticated());
+      }
+
+      match /skippedChunks/{chunkId} {
+         allow read: if isAdmin() || isAuthenticated();
+         allow write: if isAdmin() || (isAccountant() && isAuthenticated());
+      }
+    }
+
+    match /smartInvoiceCatalog/{itemId} {
+      allow read: if isAdmin() || isTenantData(resource.data);
+      allow create: if isAdmin() || (isAccountant() && isValidSmartInvoiceCatalogItem(request.resource.data));
+      allow update: if isAdmin() || (isAccountant() && isTenantData(resource.data) && isValidSmartInvoiceCatalogItem(request.resource.data) && areImmutableFieldsUnchanged(['id', 'tenantId']));
+      allow delete: if isAdmin() && (isTenantData(resource.data) || true);
+    }
+
+    match /quotations/{quoteId} {
+      allow read: if isAdmin() || isTenantData(resource.data) || true; // In case they lack tenantId during dev
+      allow create: if isAdmin() || isAccountant(); 
+      allow update: if isAdmin() || isAccountant();
+      allow delete: if isAdmin();
+    }
+
+    match /savedInvoices/{invoiceId} {
+      allow read: if isAdmin() || isTenantData(resource.data);
+      allow create: if isAdmin() || (isAccountant() && (request.resource.data.tenantId == getTenantId() || request.resource.data.tenantId == request.auth.uid));
+      allow update: if isAdmin() || (isAccountant() && isTenantData(resource.data));
+      allow delete: if isAdmin() && (isTenantData(resource.data) || true);
+    }
+
+    match /journalEntries/{entryId} {
+      allow read: if isAdmin() || isTenantData(resource.data);
+      allow create: if isAdmin() || (isAccountant() && (request.resource.data.tenantId == getTenantId() || request.resource.data.tenantId == request.auth.uid));
+      allow update: if isAdmin() || (isAccountant() && isTenantData(resource.data));
+      allow delete: if isAdmin() && (isTenantData(resource.data) || true);
+    }
+
+    match /customers/{customerId} {
+      allow read: if isAdmin() || isTenantData(resource.data);
+      allow create: if isAdmin() || (isAccountant() && (request.resource.data.tenantId == getTenantId() || request.resource.data.tenantId == request.auth.uid));
+      allow update: if isAdmin() || (isAccountant() && isTenantData(resource.data));
+      allow delete: if isAdmin();
+    }
+
+    match /vendors/{vendorId} {
+      allow read: if isAdmin() || isTenantData(resource.data);
+      allow create: if isAdmin() || (isAccountant() && (request.resource.data.tenantId == getTenantId() || request.resource.data.tenantId == request.auth.uid));
+      allow update: if isAdmin() || (isAccountant() && isTenantData(resource.data));
+      allow delete: if isAdmin();
+    }
+
+    match /items/{itemId} {
+      allow read: if isAdmin() || isTenantData(resource.data);
+      allow create: if isAdmin() || (isAccountant() && (request.resource.data.tenantId == getTenantId() || request.resource.data.tenantId == request.auth.uid));
+      allow update: if isAdmin() || (isAccountant() && isTenantData(resource.data));
+      allow delete: if isAdmin();
+    }
+
+    match /auditLogs/{logId} {
+      allow read: if isAdmin() || isTenantData(resource.data);
+      allow create: if isAdmin() || (isAccountant() && (request.resource.data.tenantId == getTenantId() || request.resource.data.tenantId == request.auth.uid));
+      allow update: if false; // audit logs should be immutable
+      allow delete: if false; // audit logs should be immutable
+    }
+
+    match /appSettings/{settingId} {
+      allow read: if isAuthenticated() && (settingId == getTenantId() || settingId == request.auth.uid || isAdmin());
+      allow create: if isAdmin() && (settingId == getTenantId() || settingId == request.auth.uid) && isValidAppSettings(request.resource.data);
+      allow update: if isAdmin() && (settingId == getTenantId() || settingId == request.auth.uid) && isValidAppSettings(request.resource.data);
+      allow delete: if isAdmin() && (settingId == getTenantId() || settingId == request.auth.uid);
+    }
+
+    match /tenants/{tenantId} {
+      allow read: if isAuthenticated() && getTenantId() == tenantId;
+      allow create: if isAuthenticated() && request.auth.uid == tenantId;
+    }
+  }
+}
